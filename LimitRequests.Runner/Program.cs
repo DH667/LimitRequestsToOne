@@ -18,11 +18,11 @@ namespace LimitRequests.Runner
 
             var firstResults = await Task.WhenAll(
                 Enumerable.Range(0, 10)
-                    .Select(_ => limiter.DoLimit("myStuff", () => DoSomeStuff(cts.Token)))
+                    .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(token), cts.Token))
                     .ToArray());
 
             var awaiters = Enumerable.Range(0, 10)
-                   .Select(_ => limiter.DoLimit("myStuff", () => DoSomeStuff(cts.Token)))
+                   .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(token), cts.Token))
                    .ToArray();
 
             // await Task.Delay(TimeSpan.FromSeconds(1));

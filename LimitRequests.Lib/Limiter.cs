@@ -1,27 +1,67 @@
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace LimitRequests.Lib
 {
     public class Limiter<T>
     {
-        public ConcurrentDictionary<string, Task<T>> actions = new ConcurrentDictionary<string, Task<T>>();
+        private readonly ConcurrentDictionary<string, AwaitedItem> actions = new ConcurrentDictionary<string, AwaitedItem>();
 
-        public Task<T> DoLimit(string key, Func<Task<T>> func)
+        public Task<T> DoLimit(string key, Func<CancellationToken, Task<T>> func, CancellationToken token)
         {
             if (actions.ContainsKey(key))
-                return actions[key];
+                return actions[key].Increment().Awaiter;
 
-            var value = func()
-                .ContinueWith(t =>
-                {
-                    actions.TryRemove(key, out _);
-                    return t.Result;
-                });
+            var value = new AwaitedItem(() => actions.TryRemove(key, out _), func);
+            token.Register(() => value.Decrement());
 
             actions.TryAdd(key, value);
-            return value;
+            return value.Awaiter;
+        }
+
+        class AwaitedItem
+        {
+            private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+            private int _numberOfAwaiters = 0;
+            private readonly Task<T> _task;
+
+            public Task<T> Awaiter => _task;
+
+            public AwaitedItem(
+                Action remove,
+                Func<CancellationToken,
+                Task<T>> task)
+            {
+                if (Interlocked.Increment(ref _numberOfAwaiters) > 1)
+                    throw new Exception("Should not happen");
+
+                _task = task(_cts.Token).ContinueWith(t =>
+                    {
+                        remove();
+                        return t.Status switch
+                        {
+                            TaskStatus.Faulted => throw t.Exception.InnerException,
+                            TaskStatus.Canceled => throw new TaskCanceledException(),
+                            _ => t.Result
+                        };
+                    });
+            }
+
+            public AwaitedItem Increment()
+            {
+                Interlocked.Increment(ref _numberOfAwaiters);
+                return this;
+            }
+
+            public void Decrement()
+            {
+                if (Interlocked.Decrement(ref _numberOfAwaiters) == 0)
+                {
+                    _cts.Cancel();
+                }
+            }
         }
     }
 }
