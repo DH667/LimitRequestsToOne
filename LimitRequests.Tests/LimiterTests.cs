@@ -17,12 +17,12 @@ namespace LimitRequests.Tests
 
             var limiter = new Limiter<int>();
 
-            var firstResults = await Task.WhenAll(
+            var result = await Task.WhenAll(
                 expected
                     .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(currentValue), CancellationToken.None))
                     .ToArray());
 
-            CollectionAssert.AreEqual(expected, firstResults);
+            CollectionAssert.AreEqual(expected, result);
         }
 
         [Test]
@@ -49,35 +49,15 @@ namespace LimitRequests.Tests
         }
 
         [Test]
-        public async Task LimiterSholdPreserveOriginalStackTrace()
+        public void LimiterSholdPreserveOriginalStackTrace()
         {
-            var limiter = new Limiter<int>();
-
-            Exception expected = null;
-            try
-            {
-                await DoSomeStuff(null, CancellationToken.None);
-            }
-            catch (Exception e)
-            {
-                expected = e;
-            }
-
-            Exception result = null;
-            try
-            {
-                await limiter.DoLimit("key", token => DoSomeStuff(null, token), CancellationToken.None);
-            }
-            catch (Exception e)
-            {
-                result = e;
-            }
-
-            Assert.AreEqual(expected.GetType(), result.GetType());
+            Assert.ThrowsAsync(
+                Is.InstanceOf<NullReferenceException>(),
+                () => new Limiter<int>().DoLimit("key", async token => await DoSomeStuff(null, token), CancellationToken.None));
         }
 
         [Test]
-        public async Task LimiterShouldHandleCancelledTask()
+        public void LimiterShouldHandleCancelledTask()
         {
             var cts = new CancellationTokenSource();
             var limiter = new Limiter<int>();
@@ -96,24 +76,34 @@ namespace LimitRequests.Tests
         }
 
         [Test]
-        [Ignore("Does not work as supposed")]
         public async Task ShouldCancelOnlyOneTask()
         {
             var cts = new CancellationTokenSource();
-            var tokens = Enumerable.Range(0, 10).Select(n => n % 5 == 0 ? cts.Token : CancellationToken.None).ToArray();
-            var expected = Enumerable.Range(0, 10).Select(_ => 1).ToArray();
             var currentValue = new RefWrapper<int>(0);
+
+            var tokens = Enumerable.Range(0, 10).Select(n => Predicate(n) ? cts.Token : CancellationToken.None).ToArray();
+            var expected = Enumerable.Range(0, 10).Select(n => Predicate(n) ? -1 : 1).ToArray();
 
             var limiter = new Limiter<int>();
 
-            var firstResults = await Task.WhenAll(
-                Enumerable.Range(0, 10)
+            var awaiters = Enumerable.Range(0, 10)
                     .Select(n => limiter.DoLimit("myStuff", token => DoSomeStuff(currentValue, token), tokens[n]))
-                    .ToArray());
+                    .Select(t => t.ContinueWith<int>(t =>
+                        t.Status == TaskStatus.Canceled
+                        ? -1
+                        : t.Result
+                    ))
+                    .ToArray();
 
-            cts.CancelAfter(1000);
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            cts.Cancel();
 
-            Assert.True(false);
+            var result = await Task.WhenAll(awaiters);
+
+            Assert.AreEqual(1, currentValue.Value);
+            CollectionAssert.AreEqual(expected, result);
+
+            static bool Predicate(int n) => n % 10 == 0;
         }
 
         async Task<int> DoSomeStuff(
@@ -121,17 +111,17 @@ namespace LimitRequests.Tests
             CancellationToken token = default(CancellationToken))
         {
             await Task.Delay(TimeSpan.FromSeconds(3), token);
-            return Interlocked.Increment(ref currentValue.Item);
+            return Interlocked.Increment(ref currentValue.Value);
         }
 
         class RefWrapper<T> where T : struct
         {
-            public RefWrapper(T item)
+            public RefWrapper(T value)
             {
-                Item = item;
+                Value = value;
             }
 
-            public T Item;
+            public T Value;
         }
     }
 }
