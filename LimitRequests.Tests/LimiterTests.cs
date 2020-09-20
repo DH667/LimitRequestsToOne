@@ -26,6 +26,33 @@ namespace LimitRequests.Tests
         }
 
         [Test]
+        public async Task LimiterShouldNotReuseCompletedAction()
+        {
+            var expected = Enumerable.Range(0, 20).Select(n => n / 10 + 1).ToArray();
+            var currentValue = new RefWrapper<int>(0);
+            var expectedValue = 2;
+
+            var limiter = new Limiter<int>();
+
+            var first = await Task.WhenAll(
+                expected
+                    .Take(10)
+                    .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(currentValue), CancellationToken.None))
+                    .ToArray());
+
+            var second = await Task.WhenAll(
+                expected
+                    .Skip(10)
+                    .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(currentValue), CancellationToken.None))
+                    .ToArray());
+
+            var result = first.Concat(second);
+
+            Assert.AreEqual(expectedValue, currentValue.Value);
+            CollectionAssert.AreEqual(expected, result);
+        }
+
+        [Test]
         public async Task LimiterShouldPreventMultipleInvokation2()
         {
             var expected = Enumerable.Range(0, 10).Select(_ => 1)
@@ -49,7 +76,7 @@ namespace LimitRequests.Tests
         }
 
         [Test]
-        public void LimiterSholdPreserveOriginalStackTrace()
+        public void LimiterShouldReturnOriginalException()
         {
             Assert.ThrowsAsync(
                 Is.InstanceOf<NullReferenceException>(),
