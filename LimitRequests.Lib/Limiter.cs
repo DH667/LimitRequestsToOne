@@ -17,8 +17,7 @@ namespace LimitRequests.Lib
 
             var tcs = new TaskCompletionSource<T>();
 
-            AwaitedItem value;
-            if (actions.TryGetValue(key, out value))
+            if (actions.TryGetValue(key, out var value))
             {
                 value.Increment(tcs);
             }
