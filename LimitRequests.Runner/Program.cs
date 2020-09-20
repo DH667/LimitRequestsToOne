@@ -25,9 +25,6 @@ namespace LimitRequests.Runner
                    .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(token), cts.Token))
                    .ToArray();
 
-            // await Task.Delay(TimeSpan.FromSeconds(1));
-            // cts.Cancel();
-
             var secondResults = await Task.WhenAll(awaiters);
 
             Console.WriteLine($"first set {string.Join(",", firstResults)}");
