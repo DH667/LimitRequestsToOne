@@ -14,15 +14,15 @@ namespace LimitRequests.Runner
             Console.WriteLine("Start");
             int currentValue = 0;
 
-            var limiter = new Limiter<int>();
+            var limiter = new FutureLimiter<string, int>();
 
             var firstResults = await Task.WhenAll(
                 Enumerable.Range(0, 10)
-                    .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(token), cts.Token))
+                    .Select(_ => limiter.Add("myStuff", token => DoSomeStuff(token), cts.Token))
                     .ToArray());
 
             var awaiters = Enumerable.Range(0, 10)
-                   .Select(_ => limiter.DoLimit("myStuff", token => DoSomeStuff(token), cts.Token))
+                   .Select(_ => limiter.Add("myStuff", token => DoSomeStuff(token), cts.Token))
                    .ToArray();
 
             var secondResults = await Task.WhenAll(awaiters);

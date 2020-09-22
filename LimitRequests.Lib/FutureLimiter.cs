@@ -6,16 +6,16 @@ using System.Threading.Tasks;
 
 namespace LimitRequests.Lib
 {
-    public class Limiter<T>
+    public class FutureLimiter<TKey, TResult>
     {
-        private readonly ConcurrentDictionary<string, AwaitedItem> actions = new ConcurrentDictionary<string, AwaitedItem>();
+        private readonly ConcurrentDictionary<TKey, AwaitedItem> actions = new ConcurrentDictionary<TKey, AwaitedItem>();
 
-        public Task<T> DoLimit(string key, Func<CancellationToken, Task<T>> func, CancellationToken token)
+        public Task<TResult> Add(TKey key, Func<CancellationToken, Task<TResult>> func, CancellationToken token)
         {
             if (token.IsCancellationRequested)
-                return Task.FromCanceled<T>(token);
+                return Task.FromCanceled<TResult>(token);
 
-            var tcs = new TaskCompletionSource<T>();
+            var tcs = new TaskCompletionSource<TResult>();
 
             if (actions.TryGetValue(key, out var value))
             {
@@ -36,17 +36,20 @@ namespace LimitRequests.Lib
             return tcs.Task;
         }
 
+        public bool TryInvalidate(TKey key) => actions.TryRemove(key, out _);
+
+        public void InvalidateAll() => actions.Clear();
+
         class AwaitedItem
         {
             private readonly object _lock = new object();
             private readonly CancellationTokenSource _cts = new CancellationTokenSource();
-            private readonly Func<CancellationToken, Task<T>> _task;
-            private List<TaskCompletionSource<T>> _tcs = new List<TaskCompletionSource<T>>();
+            private List<TaskCompletionSource<TResult>> _tcs = new List<TaskCompletionSource<TResult>>();
 
             public AwaitedItem(
                 Action remove,
-                Func<CancellationToken, Task<T>> task,
-                TaskCompletionSource<T> tcs)
+                Func<CancellationToken, Task<TResult>> task,
+                TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
                 {
@@ -75,11 +78,9 @@ namespace LimitRequests.Lib
                                break;
                        };
                    });
-
-                _task = task;
             }
 
-            public void Increment(TaskCompletionSource<T> tcs)
+            public void Increment(TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
                 {
@@ -87,14 +88,14 @@ namespace LimitRequests.Lib
                 }
             }
 
-            public void Decrement(TaskCompletionSource<T> tcs)
+            public void Decrement(TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
                 {
                     _tcs.Remove(tcs);
+                    if (_tcs.Count == 0)
+                        _cts.Cancel();
                 }
-                if (_tcs.Count == 0)
-                    _cts.Cancel();
             }
         }
     }
