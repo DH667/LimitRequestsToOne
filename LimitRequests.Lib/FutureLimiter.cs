@@ -8,7 +8,7 @@ namespace LimitRequests.Lib
 {
     public class FutureLimiter<TKey, TResult>
     {
-        private readonly ConcurrentDictionary<TKey, AwaitedItem> actions = new ConcurrentDictionary<TKey, AwaitedItem>();
+        private readonly ConcurrentDictionary<TKey, AwaitedItem> _futures = new ConcurrentDictionary<TKey, AwaitedItem>();
 
         public Task<TResult> Add(TKey key, Func<CancellationToken, Task<TResult>> func, CancellationToken token)
         {
@@ -17,15 +17,11 @@ namespace LimitRequests.Lib
 
             var tcs = new TaskCompletionSource<TResult>();
 
-            if (actions.TryGetValue(key, out var value))
-            {
-                value.Increment(tcs);
-            }
-            else
-            {
-                value = new AwaitedItem(() => actions.Remove(key, out _), func, tcs);
-                actions.TryAdd(key, value);
-            }
+            var value = _futures.AddOrUpdate(
+                key,
+                key => new AwaitedItem(key, _futures, func, tcs),
+                (key, current) => current.Increment(tcs)
+                );
 
             token.Register(() =>
                 {
@@ -36,9 +32,9 @@ namespace LimitRequests.Lib
             return tcs.Task;
         }
 
-        public bool TryInvalidate(TKey key) => actions.TryRemove(key, out _);
+        public bool TryInvalidate(TKey key) => _futures.TryRemove(key, out _);
 
-        public void InvalidateAll() => actions.Clear();
+        public void InvalidateAll() => _futures.Clear();
 
         class AwaitedItem
         {
@@ -47,55 +43,49 @@ namespace LimitRequests.Lib
             private List<TaskCompletionSource<TResult>> _tcs = new List<TaskCompletionSource<TResult>>();
 
             public AwaitedItem(
-                Action remove,
+                TKey key,
+                ConcurrentDictionary<TKey, AwaitedItem> actions,
                 Func<CancellationToken, Task<TResult>> task,
                 TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
-                {
-                    _tcs.Add(_tcs.Count == 0
-                        ? tcs
-                        : throw new Exception($"Should never happen"));
-                }
+                    _tcs.Add(tcs);
 
                 task(_cts.Token).ContinueWith(t =>
                    {
-                       remove();
+                       actions.TryRemove(key, out _);
+                       lock (_lock)
+                           switch (t.Status)
+                           {
+                               case TaskStatus.Faulted:
+                                   foreach (var tcs in _tcs)
+                                       tcs.TrySetException(t.Exception.InnerException);
+                                   break;
+                               case TaskStatus.Canceled:
+                                   _tcs.ForEach(tcs => tcs.TrySetCanceled());
+                                   break;
+                               default:
+                                   foreach (var tcs in _tcs)
+                                       tcs.TrySetResult(t.Result);
+                                   break;
+                           };
 
-                       switch (t.Status)
-                       {
-                           case TaskStatus.Faulted:
-                               foreach (var tcs in _tcs)
-                                   tcs.SetException(t.Exception.InnerException);
-                               break;
-                           case TaskStatus.Canceled:
-                               _tcs.ForEach(tcs => tcs.SetCanceled());
-                               break;
-                           default:
-                               foreach (var tcs in _tcs)
-                                   if (!tcs.Task.IsCanceled)
-                                       tcs.SetResult(t.Result);
-                               break;
-                       };
                    });
             }
 
-            public void Increment(TaskCompletionSource<TResult> tcs)
+            public AwaitedItem Increment(TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
-                {
                     _tcs.Add(tcs);
-                }
+                return this;
             }
 
             public void Decrement(TaskCompletionSource<TResult> tcs)
             {
                 lock (_lock)
-                {
                     _tcs.Remove(tcs);
-                    if (_tcs.Count == 0)
-                        _cts.Cancel();
-                }
+                if (_tcs.Count == 0)
+                    _cts.Cancel();
             }
         }
     }

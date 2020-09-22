@@ -12,7 +12,7 @@ namespace LimitRequests.Tests
         private const string key = "myStuff";
 
         [Test]
-        public async Task LimiterShouldPreventMultipleInvokation()
+        public async Task LimiterShouldPreventMultipleExecution()
         {
             var expectedValue = 1;
             var expected = Enumerable.Range(0, 10).Select(_ => 1).ToArray();
@@ -57,7 +57,8 @@ namespace LimitRequests.Tests
         public async Task LimiterShouldInvalidateAllAwaiters()
         {
             var expectedValue = 3;
-            var expected = Enumerable.Range(0, 10).Select(n => n / 5 + 2).ToArray();
+            var expected1 = Enumerable.Range(0, 10).Select(n => n < 5 ? 1 : 2).ToArray();
+            var expected2 = Enumerable.Range(0, 10).Select(_ => 3).ToArray();
             var currentValue = new RefWrapper<int>(0);
 
             var limiter = new FutureLimiter<string, int>();
@@ -65,22 +66,23 @@ namespace LimitRequests.Tests
             var set1 = Enumerable.Range(0, 10)
                     .Select(n =>
                        {
-                           var task = limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None);
+                           var task = limiter.Add(key, token => DoSomeStuff(currentValue, 2000), CancellationToken.None);
                            if (n == 4)
                                limiter.InvalidateAll();
                            return task;
                        })
                     .ToArray();
+
             var set2 = Enumerable.Range(0, 10)
-            .Select(n => limiter.Add("otherKey", token => DoSomeStuff(currentValue), CancellationToken.None))
-            .ToArray();
+                .Select(n => limiter.Add("otherKey", token => DoSomeStuff(currentValue, 5000), CancellationToken.None))
+                .ToArray();
 
             var result1 = await Task.WhenAll(set1);
             var result2 = await Task.WhenAll(set2);
 
             Assert.AreEqual(expectedValue, currentValue.Value);
-            CollectionAssert.AreEqual(expected, result1);
-            CollectionAssert.AreEqual(expected, result1);
+            CollectionAssert.AreEqual(expected1, result1);
+            CollectionAssert.AreEqual(expected2, result2);
         }
 
         [Test]
@@ -95,13 +97,13 @@ namespace LimitRequests.Tests
             var first = await Task.WhenAll(
                 expected
                     .Take(10)
-                    .Select(_ => limiter.Add("myStuff", token => DoSomeStuff(currentValue), CancellationToken.None))
+                    .Select(_ => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
                     .ToArray());
 
             var second = await Task.WhenAll(
                 expected
                     .Skip(10)
-                    .Select(_ => limiter.Add("myStuff", token => DoSomeStuff(currentValue), CancellationToken.None))
+                    .Select(_ => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
                     .ToArray());
 
             var result = first.Concat(second);
@@ -111,7 +113,7 @@ namespace LimitRequests.Tests
         }
 
         [Test]
-        public async Task LimiterShouldPreventMultipleInvokation2()
+        public async Task LimiterShouldPreventMultipleExecution2()
         {
             var expected = Enumerable.Range(0, 10).Select(_ => 1)
                 .Concat(Enumerable.Range(0, 10).Select(_ => 1)).ToArray();
@@ -123,11 +125,11 @@ namespace LimitRequests.Tests
             var results = await Task.WhenAll(
                 expected
                     .Take(10)
-                    .Select(_ => limiter.Add("myStuff",
-                        token => DoSomeStuff(currentValue, token), CancellationToken.None))
+                    .Select(_ => limiter.Add(key,
+                        token => DoSomeStuff(currentValue, token: token), CancellationToken.None))
                     .Concat(expected.Skip(10)
-                        .Select(_ => limiter.Add("myStuff",
-                            token => DoSomeStuff(currentValue, token), CancellationToken.None)))
+                        .Select(_ => limiter.Add(key,
+                            token => DoSomeStuff(currentValue, token: token), CancellationToken.None)))
                    .ToArray());
 
             CollectionAssert.AreEqual(expected, results);
@@ -138,7 +140,10 @@ namespace LimitRequests.Tests
         {
             Assert.ThrowsAsync(
                 Is.InstanceOf<NullReferenceException>(),
-                () => new FutureLimiter<string, int>().Add("key", async token => await DoSomeStuff(null, token), CancellationToken.None));
+                () => new FutureLimiter<string, int>().Add(
+                    key,
+                    async token => await DoSomeStuff(null, token: token),
+                    CancellationToken.None));
         }
 
         [Test]
@@ -148,7 +153,7 @@ namespace LimitRequests.Tests
             var limiter = new FutureLimiter<string, int>();
             var currentValue = new RefWrapper<int>(0);
 
-            var awaiter = limiter.Add("key", async token =>
+            var awaiter = limiter.Add(key, async token =>
                 {
                     await Task.Delay(TimeSpan.FromSeconds(3), token);
                     return -1;
@@ -166,36 +171,49 @@ namespace LimitRequests.Tests
             var cts = new CancellationTokenSource();
             var currentValue = new RefWrapper<int>(0);
 
-            var tokens = Enumerable.Range(0, 10).Select(n => Predicate(n) ? cts.Token : CancellationToken.None).ToArray();
-            var expected = Enumerable.Range(0, 10).Select(n => Predicate(n) ? -1 : 1).ToArray();
+            var expected = Enumerable.Range(0, 10).Select(n => n == 5 ? -1 : 1).ToArray();
 
             var limiter = new FutureLimiter<string, int>();
 
             var awaiters = Enumerable.Range(0, 10)
-                    .Select(n => limiter.Add("myStuff", token => DoSomeStuff(currentValue, token), tokens[n]))
-                    .Select(t => t.ContinueWith<int>(t =>
-                        t.Status == TaskStatus.Canceled
-                        ? -1
-                        : t.Result
-                    ))
-                    .ToArray();
+                .Select(n =>
+                    {
+                        var x = n;
+                        return limiter.Add(
+                            key,
+                            token => DoSomeStuff(currentValue, token: token),
+                                x == 5 ? cts.Token : CancellationToken.None);
+                    })
+                .ToArray();
 
             await Task.Delay(TimeSpan.FromSeconds(1));
             cts.Cancel();
 
-            var result = await Task.WhenAll(awaiters);
+            var result = await AwaitResults<int>(awaiters);
 
             Assert.AreEqual(1, currentValue.Value);
-            CollectionAssert.AreEqual(expected, result);
-
-            static bool Predicate(int n) => n % 10 == 0;
+            CollectionAssert.AreEqual(expected.Take(4), result.Take(4).Select(r => r.result));
+            CollectionAssert.AreEqual(expected.Skip(6), result.Skip(6).Select(r => r.result));
+            Assert.IsInstanceOf<TaskCanceledException>(result[5].exception);
         }
 
-        async Task<int> DoSomeStuff(
+        private Task<(TResult result, Exception exception)[]> AwaitResults<TResult>(Task<TResult>[] tasks)
+        =>
+        Task.WhenAll(tasks.Select(t =>
+            t.ContinueWith<(TResult, Exception)>(t =>
+                  t.Status switch
+                  {
+                      TaskStatus.Faulted => (default, t.Exception.InnerException),
+                      TaskStatus.Canceled => (default, new TaskCanceledException()),
+                      _ => (t.Result, null)
+                  })));
+
+        private async Task<int> DoSomeStuff(
             RefWrapper<int> currentValue,
+            int delayInMillis = 3000,
             CancellationToken token = default(CancellationToken))
         {
-            await Task.Delay(TimeSpan.FromSeconds(3), token);
+            await Task.Delay(delayInMillis, token);
             return Interlocked.Increment(ref currentValue.Value);
         }
 
