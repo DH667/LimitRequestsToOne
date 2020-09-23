@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,20 +18,14 @@ namespace LimitRequests.Lib
 
             var value = _futures.AddOrUpdate(
                 key,
-                key => new AwaitedItem(key, _futures, func, tcs),
-                (key, current) => current.Increment(tcs)
-                );
-
-            token.Register(() =>
-                {
-                    value.Decrement(tcs);
-                    tcs.SetCanceled();
-                });
+                key => new AwaitedItem(key, _futures, func, tcs, token),
+                (key, current) => current.Increment(tcs, token));
 
             return tcs.Task;
         }
 
         public bool TryInvalidate(TKey key) => _futures.TryRemove(key, out _);
+
 
         public void InvalidateAll() => _futures.Clear();
 
@@ -40,16 +33,21 @@ namespace LimitRequests.Lib
         {
             private readonly object _lock = new object();
             private readonly CancellationTokenSource _cts = new CancellationTokenSource();
-            private List<TaskCompletionSource<TResult>> _tcs = new List<TaskCompletionSource<TResult>>();
+            private readonly ConcurrentDictionary<TaskCompletionSource<TResult>, CancellationTokenRegistration> _cancellations =
+                new ConcurrentDictionary<TaskCompletionSource<TResult>, CancellationTokenRegistration>();
 
             public AwaitedItem(
                 TKey key,
                 ConcurrentDictionary<TKey, AwaitedItem> actions,
                 Func<CancellationToken, Task<TResult>> task,
-                TaskCompletionSource<TResult> tcs)
+                TaskCompletionSource<TResult> tcs,
+                CancellationToken token)
             {
-                lock (_lock)
-                    _tcs.Add(tcs);
+                _cancellations.TryAdd(tcs, token.Register(() =>
+                 {
+                     Decrement(tcs);
+                     tcs.SetCanceled();
+                 }));
 
                 task(_cts.Token).ContinueWith(t =>
                    {
@@ -58,33 +56,46 @@ namespace LimitRequests.Lib
                            switch (t.Status)
                            {
                                case TaskStatus.Faulted:
-                                   foreach (var tcs in _tcs)
-                                       tcs.TrySetException(t.Exception.InnerException);
+                                   foreach (var (k, v) in _cancellations)
+                                   {
+                                       k.TrySetException(t.Exception.InnerException);
+                                       v.DisposeAsync();
+                                   }
                                    break;
                                case TaskStatus.Canceled:
-                                   _tcs.ForEach(tcs => tcs.TrySetCanceled());
+                                   foreach (var (k, v) in _cancellations)
+                                   {
+                                       k.TrySetCanceled();
+                                       v.DisposeAsync();
+                                   }
                                    break;
                                default:
-                                   foreach (var tcs in _tcs)
-                                       tcs.TrySetResult(t.Result);
+                                   foreach (var (k, v) in _cancellations)
+                                   {
+                                       k.TrySetResult(t.Result);
+                                       v.DisposeAsync();
+                                   }
                                    break;
                            };
-
                    });
             }
 
-            public AwaitedItem Increment(TaskCompletionSource<TResult> tcs)
+            public AwaitedItem Increment(TaskCompletionSource<TResult> tcs, CancellationToken token)
             {
-                lock (_lock)
-                    _tcs.Add(tcs);
+                _cancellations.TryAdd(tcs, token.Register(() =>
+                 {
+                     Decrement(tcs);
+                     tcs.SetCanceled();
+                 }));
+
                 return this;
             }
 
             public void Decrement(TaskCompletionSource<TResult> tcs)
             {
-                lock (_lock)
-                    _tcs.Remove(tcs);
-                if (_tcs.Count == 0)
+                if (_cancellations.TryRemove(tcs, out var registration))
+                    registration.DisposeAsync();
+                if (_cancellations.Count == 0)
                     _cts.Cancel();
             }
         }

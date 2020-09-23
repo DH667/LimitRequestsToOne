@@ -38,16 +38,17 @@ namespace LimitRequests.Tests
 
             var limiter = new FutureLimiter<string, int>();
 
-            var result = await Task.WhenAll(
-                Enumerable.Range(0, 10)
-                    .Select(n =>
-                       {
-                           var task = limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None);
-                           if (n == 4)
-                               limiter.TryInvalidate(key);
-                           return task;
-                       })
-                    .ToArray());
+            var firstSet = Enumerable.Range(0, 5)
+                .Select(n => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
+                .ToArray();
+
+            limiter.TryInvalidate(key);
+
+            var secondSet = Enumerable.Range(0, 5)
+                .Select(n => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
+                .ToArray();
+
+            var result = await Task.WhenAll(firstSet.Concat(secondSet));
 
             Assert.AreEqual(expectedValue, currentValue.Value);
             CollectionAssert.AreEqual(expected, result);
