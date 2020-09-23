@@ -7,6 +7,7 @@ namespace LimitRequests.Lib
 {
     public class FutureLimiter<TKey, TResult>
     {
+        private readonly object _lock = new object();
         private readonly ConcurrentDictionary<TKey, AwaitedItem> _futures = new ConcurrentDictionary<TKey, AwaitedItem>();
 
         public Task<TResult> Add(TKey key, Func<CancellationToken, Task<TResult>> func, CancellationToken token)
@@ -16,16 +17,19 @@ namespace LimitRequests.Lib
 
             var tcs = new TaskCompletionSource<TResult>();
 
-            var value = _futures.AddOrUpdate(
-                key,
-                key => new AwaitedItem(key, _futures, func, tcs, token),
-                (key, current) => current.Increment(tcs, token));
+            lock (_lock)
+                _futures.AddOrUpdate(
+                   key,
+                   key => new AwaitedItem(key, _futures, func, tcs, token),
+                   (key, current) => current.Increment(tcs, token));
 
             return tcs.Task;
         }
 
-        public bool TryInvalidate(TKey key) => _futures.TryRemove(key, out _);
-
+        public bool TryInvalidate(TKey key)
+        {
+            lock (_lock) return _futures.TryRemove(key, out _);
+        }
 
         public void InvalidateAll() => _futures.Clear();
 
@@ -77,6 +81,7 @@ namespace LimitRequests.Lib
                                    }
                                    break;
                            };
+                       _cts.Dispose();
                    });
             }
 
@@ -93,10 +98,13 @@ namespace LimitRequests.Lib
 
             public void Decrement(TaskCompletionSource<TResult> tcs)
             {
-                if (_cancellations.TryRemove(tcs, out var registration))
-                    registration.DisposeAsync();
-                if (_cancellations.Count == 0)
-                    _cts.Cancel();
+                lock (_lock)
+                {
+                    if (_cancellations.TryRemove(tcs, out var registration))
+                        registration.DisposeAsync();
+                    if (_cancellations.Count == 0)
+                        _cts.Cancel();
+                }
             }
         }
     }
