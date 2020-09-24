@@ -19,8 +19,10 @@ namespace LimitRequests.Tests
 
             var limiter = new FutureLimiter<string, int>();
 
-            var result = await
-                     limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None);
+            var result = await limiter.Add(
+                key,
+                token => DoSomeStuff(currentValue),
+                CancellationToken.None);
 
             Assert.AreEqual(expectedValue, currentValue.Value);
         }
@@ -36,7 +38,10 @@ namespace LimitRequests.Tests
 
             var result = await Task.WhenAll(
                 expected
-                    .Select(_ => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
+                    .Select(_ => limiter.Add(
+                        key,
+                        token => DoSomeStuff(currentValue),
+                        CancellationToken.None))
                     .ToArray());
 
             Assert.AreEqual(expectedValue, currentValue.Value);
@@ -53,13 +58,19 @@ namespace LimitRequests.Tests
             var limiter = new FutureLimiter<string, int>();
 
             var firstSet = Enumerable.Range(0, 5)
-                .Select(n => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
+                .Select(n => limiter.Add(
+                    key,
+                    token => DoSomeStuff(currentValue),
+                    CancellationToken.None))
                 .ToArray();
 
             limiter.TryInvalidate(key);
 
             var secondSet = Enumerable.Range(0, 5)
-                .Select(n => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
+                .Select(n => limiter.Add(
+                    key,
+                    token => DoSomeStuff(currentValue),
+                    CancellationToken.None))
                 .ToArray();
 
             var result1 = await Task.WhenAll(firstSet);
@@ -85,7 +96,10 @@ namespace LimitRequests.Tests
             var set1 = Enumerable.Range(0, 10)
                     .Select(n =>
                        {
-                           var task = limiter.Add(key, token => DoSomeStuff(currentValue, 2000), CancellationToken.None);
+                           var task = limiter.Add(
+                               key,
+                               token => DoSomeStuff(currentValue, 2000),
+                               CancellationToken.None);
                            if (n == 4)
                                limiter.InvalidateAll();
                            return task;
@@ -93,7 +107,10 @@ namespace LimitRequests.Tests
                     .ToArray();
 
             var set2 = Enumerable.Range(0, 10)
-                .Select(n => limiter.Add("otherKey", token => DoSomeStuff(currentValue, 5000), CancellationToken.None))
+                .Select(n => limiter.Add(
+                    "otherKey",
+                    token => DoSomeStuff(currentValue, 5000),
+                    CancellationToken.None))
                 .ToArray();
 
             var result1 = await Task.WhenAll(set1);
