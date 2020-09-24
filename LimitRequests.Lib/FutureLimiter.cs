@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,21 +10,37 @@ namespace LimitRequests.Lib
     {
         private readonly object _lock = new object();
         private readonly ConcurrentDictionary<TKey, AwaitedItem> _futures = new ConcurrentDictionary<TKey, AwaitedItem>();
-
         public Task<TResult> Add(TKey key, Func<CancellationToken, Task<TResult>> func, CancellationToken token)
         {
             if (token.IsCancellationRequested)
                 return Task.FromCanceled<TResult>(token);
 
             var tcs = new TaskCompletionSource<TResult>();
+            AwaitedItem awaitedItem;
 
             lock (_lock)
-                _futures.AddOrUpdate(
+                awaitedItem = _futures.AddOrUpdate(
                    key,
-                   key => new AwaitedItem(key, _futures, func, tcs, token),
-                   (key, current) => current.Increment(tcs, token));
+                   key => new AwaitedItem(key, _futures, func, tcs),
+                   (key, current) => current.Increment(key, _futures, func, tcs));
 
-            return tcs.Task;
+            var registration = token.Register(() =>
+                 {
+                     awaitedItem.Decrement(tcs);
+                     tcs.SetCanceled();
+                 });
+            tcs.Task.ContinueWith(t => registration.DisposeAsync());
+
+            return tcs.Task.ContinueWith<TResult>(t =>
+            {
+                registration.DisposeAsync();
+                return t.Status switch
+                {
+                    TaskStatus.Canceled => throw new TaskCanceledException(),
+                    TaskStatus.Faulted => throw t.Exception.InnerException,
+                    _ => t.Result
+                };
+            });
         }
 
         public bool TryInvalidate(TKey key)
@@ -36,75 +53,70 @@ namespace LimitRequests.Lib
         class AwaitedItem
         {
             private readonly object _lock = new object();
+
+            private int _awaitersCount = 1;
             private readonly CancellationTokenSource _cts = new CancellationTokenSource();
-            private readonly ConcurrentDictionary<TaskCompletionSource<TResult>, CancellationTokenRegistration> _cancellations =
-                new ConcurrentDictionary<TaskCompletionSource<TResult>, CancellationTokenRegistration>();
+
+            private readonly List<TaskCompletionSource<TResult>> _taskCompletions = new List<TaskCompletionSource<TResult>>();
 
             public AwaitedItem(
                 TKey key,
-                ConcurrentDictionary<TKey, AwaitedItem> actions,
+                ConcurrentDictionary<TKey, AwaitedItem> futures,
                 Func<CancellationToken, Task<TResult>> task,
-                TaskCompletionSource<TResult> tcs,
-                CancellationToken token)
+                TaskCompletionSource<TResult> tcs
+                )
             {
-                _cancellations.TryAdd(tcs, token.Register(() =>
-                 {
-                     Decrement(tcs);
-                     tcs.SetCanceled();
-                 }));
+                _taskCompletions.Add(tcs);
 
                 task(_cts.Token).ContinueWith(t =>
                    {
-                       actions.TryRemove(key, out _);
+                       Interlocked.Exchange(ref _awaitersCount, 0);
+                       if (futures[key].Equals(this))
+                           futures.TryRemove(key, out _);
+
                        lock (_lock)
                            switch (t.Status)
                            {
                                case TaskStatus.Faulted:
-                                   foreach (var (k, v) in _cancellations)
-                                   {
-                                       k.TrySetException(t.Exception.InnerException);
-                                       v.DisposeAsync();
-                                   }
+                                   foreach (var taskCompletion in _taskCompletions)
+                                       taskCompletion.TrySetException(t.Exception.InnerException);
                                    break;
                                case TaskStatus.Canceled:
-                                   foreach (var (k, v) in _cancellations)
-                                   {
-                                       k.TrySetCanceled();
-                                       v.DisposeAsync();
-                                   }
+                                   foreach (var taskCompletion in _taskCompletions)
+                                       taskCompletion.TrySetCanceled();
                                    break;
                                default:
-                                   foreach (var (k, v) in _cancellations)
-                                   {
-                                       k.TrySetResult(t.Result);
-                                       v.DisposeAsync();
-                                   }
+                                   foreach (var taskCompletion in _taskCompletions)
+                                       taskCompletion.TrySetResult(t.Result);
                                    break;
                            };
                        _cts.Dispose();
                    });
             }
 
-            public AwaitedItem Increment(TaskCompletionSource<TResult> tcs, CancellationToken token)
+            public AwaitedItem Increment(
+                TKey key,
+                ConcurrentDictionary<TKey, AwaitedItem> futures,
+                Func<CancellationToken, Task<TResult>> task,
+                TaskCompletionSource<TResult> tcs)
             {
-                _cancellations.TryAdd(tcs, token.Register(() =>
-                 {
-                     Decrement(tcs);
-                     tcs.SetCanceled();
-                 }));
+                if (Interlocked.Increment(ref _awaitersCount) == 1)
+                    return new AwaitedItem(key, futures, task, tcs);
 
+                lock (_lock)
+                    _taskCompletions.Add(tcs);
                 return this;
             }
 
             public void Decrement(TaskCompletionSource<TResult> tcs)
             {
+                var awaitersCount = Interlocked.Decrement(ref _awaitersCount);
+
+                if (awaitersCount <= 0)
+                    _cts.Cancel();
+
                 lock (_lock)
-                {
-                    if (_cancellations.TryRemove(tcs, out var registration))
-                        registration.DisposeAsync();
-                    if (_cancellations.Count == 0)
-                        _cts.Cancel();
-                }
+                    _taskCompletions.Remove(tcs);
             }
         }
     }

@@ -12,6 +12,20 @@ namespace LimitRequests.Tests
         private const string key = "myStuff";
 
         [Test]
+        public async Task LimiterShouldReturnResult()
+        {
+            var expectedValue = 1;
+            var currentValue = new RefWrapper<int>(0);
+
+            var limiter = new FutureLimiter<string, int>();
+
+            var result = await
+                     limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None);
+
+            Assert.AreEqual(expectedValue, currentValue.Value);
+        }
+
+        [Test]
         public async Task LimiterShouldPreventMultipleExecution()
         {
             var expectedValue = 1;
@@ -48,10 +62,14 @@ namespace LimitRequests.Tests
                 .Select(n => limiter.Add(key, token => DoSomeStuff(currentValue), CancellationToken.None))
                 .ToArray();
 
-            var result = await Task.WhenAll(firstSet.Concat(secondSet));
+            var result1 = await Task.WhenAll(firstSet);
+            var result2 = await Task.WhenAll(secondSet);
 
             Assert.AreEqual(expectedValue, currentValue.Value);
-            CollectionAssert.AreEqual(expected, result);
+            CollectionAssert.AreEqual(expected.Take(5), result1,
+                $"exp:{string.Join(", ", expected)}\nres:{string.Join(", ", result1)}dd");
+            CollectionAssert.AreEqual(expected.Skip(5), result2,
+                $"exp:{string.Join(", ", expected)}\nres:{string.Join(", ", result2)}dd");
         }
 
         [Test]
@@ -82,8 +100,12 @@ namespace LimitRequests.Tests
             var result2 = await Task.WhenAll(set2);
 
             Assert.AreEqual(expectedValue, currentValue.Value);
-            CollectionAssert.AreEqual(expected1, result1);
-            CollectionAssert.AreEqual(expected2, result2);
+            CollectionAssert.AreEqual(expected1, result1,
+
+            $"exp:{string.Join(", ", expected1)}\nres:{string.Join(", ", result1)}dd");
+
+            CollectionAssert.AreEqual(expected2, result2,
+            $"exp:{string.Join(", ", expected2)}\nres:{string.Join(", ", result2)}dd");
         }
 
         [Test]
