@@ -29,7 +29,6 @@ namespace LimitRequests.Lib
                      awaitedItem.Decrement(tcs);
                      tcs.SetCanceled();
                  });
-            tcs.Task.ContinueWith(t => registration.DisposeAsync());
 
             return tcs.Task.ContinueWith<TResult>(t =>
             {
@@ -109,7 +108,7 @@ namespace LimitRequests.Lib
 
                 lock (_lock)
                     _taskCompletions.Add(tcs);
-                    
+
                 return this;
             }
 
