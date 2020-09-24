@@ -55,7 +55,7 @@ namespace LimitRequests.Lib
             private readonly object _lock = new object();
 
             private int _awaitersCount = 1;
-            private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+            private CancellationTokenSource _cts = new CancellationTokenSource();
 
             private readonly List<TaskCompletionSource<TResult>> _taskCompletions = new List<TaskCompletionSource<TResult>>();
 
@@ -71,10 +71,12 @@ namespace LimitRequests.Lib
                 task(_cts.Token).ContinueWith(t =>
                    {
                        Interlocked.Exchange(ref _awaitersCount, 0);
+
                        if (futures[key].Equals(this))
                            futures.TryRemove(key, out _);
 
                        lock (_lock)
+                       {
                            switch (t.Status)
                            {
                                case TaskStatus.Faulted:
@@ -90,7 +92,9 @@ namespace LimitRequests.Lib
                                        taskCompletion.TrySetResult(t.Result);
                                    break;
                            };
-                       _cts.Dispose();
+                           _cts.Dispose();
+                           _cts = null;
+                       }
                    });
             }
 
@@ -105,6 +109,7 @@ namespace LimitRequests.Lib
 
                 lock (_lock)
                     _taskCompletions.Add(tcs);
+                    
                 return this;
             }
 
@@ -112,8 +117,9 @@ namespace LimitRequests.Lib
             {
                 var awaitersCount = Interlocked.Decrement(ref _awaitersCount);
 
-                if (awaitersCount <= 0)
-                    _cts.Cancel();
+                if (awaitersCount == 0)
+                    lock (_lock)
+                        _cts?.Cancel();
 
                 lock (_lock)
                     _taskCompletions.Remove(tcs);
