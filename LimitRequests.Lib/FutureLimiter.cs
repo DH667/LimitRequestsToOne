@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,8 +13,7 @@ namespace LimitRequests.Lib
         private readonly ConcurrentDictionary<TKey, AwaitedItem> _futures = new ConcurrentDictionary<TKey, AwaitedItem>();
         public async Task<TResult> Add(TKey key, Func<CancellationToken, Task<TResult>> func, CancellationToken token)
         {
-            if (token.IsCancellationRequested)
-                throw new TaskCanceledException();
+            token.ThrowIfCancellationRequested();
 
             AwaitedItem awaitedItem;
 
@@ -63,8 +63,8 @@ namespace LimitRequests.Lib
                 {
                     Interlocked.Exchange(ref _awaitersCount, 0);
 
-                    if (futures[key].Equals(this))
-                        futures.TryRemove(key, out _);
+                    ((ICollection<KeyValuePair<TKey, AwaitedItem>>)futures)
+                        .Remove(new KeyValuePair<TKey, AwaitedItem>(key, this));
 
                     switch (t.Status)
                     {

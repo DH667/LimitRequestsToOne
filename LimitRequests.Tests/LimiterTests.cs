@@ -65,6 +65,7 @@ namespace LimitRequests.Tests
                 .ToArray();
 
             limiter.TryInvalidate(key);
+            await Task.Delay(100);
 
             var secondSet = Enumerable.Range(0, 5)
                 .Select(n => limiter.Add(
@@ -78,7 +79,7 @@ namespace LimitRequests.Tests
 
             Assert.AreEqual(expectedValue, currentValue.Value);
             CollectionAssert.AreEqual(expected.Take(5), result1,
-                $"exp:{string.Join(", ", expected)}\nres:{string.Join(", ", result1)}dd");
+                $"exp:{string.Join(", ", expected)}\nres:{string.Join(", ", result1)}");
             CollectionAssert.AreEqual(expected.Skip(5), result2,
                 $"exp:{string.Join(", ", expected)}\nres:{string.Join(", ", result2)}dd");
         }
